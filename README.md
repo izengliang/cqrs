@@ -1,2 +1,1 @@
-# cqrs
-CQRS framework for javascript
+# test
