@@ -1,121 +1,57 @@
-import { map } from "rxjs";
-import { Domain, AggregateRoot } from "../src/index.js";
+import { Domain, AggregateRoot, MemoryEventDB } from "../src/index.js";
 
-class ItemRepository {
-  /**@type {Domain}*/
-  domain;
-  constructor(domain) {
-    this.domain = domain;
-  }
 
-  #itemMap = new Map();
+// single mode
+class TodoManager extends AggregateRoot {
 
-  all() {
-    return [...this.#itemMap.values()];
-  }
-  get(id) {
-    return this.#itemMap.get(id);
-  }
-  remove(id) {
-    this.#itemMap.delete(id);
-  }
-  num = 0;
-  create() {
-    ++this.num;
-    const ItemClass = this.domain.getAggegateClass(Item);
-    const item = new ItemClass("id" + this.num);
-    this.#itemMap.set(item.id, item);
-    const event = {
-      type: "create item",
-    };
-    this.domain.eventBus.publish(event);
-    return item;
-  }
-}
-
-class MyDomain extends Domain {
-  itemRepository = new ItemRepository(this);
-}
-
-// const  { name: string, type: "change item name" };
-
-// { type: "create item" };
-
-// {type: "done"}
-
-class Item extends AggregateRoot {
-  /**
-   *
-   * @param {string} id
-   */
-  constructor(id) {
-    super();
-  }
-
-  #name = "";
-  get name() {
-    return this.#name;
-  }
-
-  changeName(name) {
-    const changeNameEvent = {
-      type: "change item name",
-      name: "lion",
-    };
-    this.apply(changeNameEvent);
-  }
-  /**
-   *
-   * @param { ICommand } event
-   */
-  eventHandler(event) {
-    switch (event.type) {
-      case "change item name":
-        const e = event;
-        this.#name = e.name;
+    handler(event) {
+        console.log("handler...", event);
     }
-  }
+
+    onLoaded() {
+        this.$domain.eventBus.on({ aggregateName: "Todo" }, this.handler, this.id);
+    }
+
+    async exchange(id1, id2) {
+        this.$on({ aggregateName: "Todo", aggregateId: id1 }, e => console.log(e), true);
+        this.$on({ aggregateName: "Todo", aggregateId: id2 }, e => console.log(e), true);
+        const t1 = await this.$get("Todo", id1);
+        const t2 = await this.$get("Todo", id2);
+        const t1content = t1.json.content;
+        const t2content = t2.json.content;
+        await t1.change(t2content);
+        await t2.change(t1content);
+    }
+
 }
 
-const domain = new MyDomain([Item]);
+class Todo extends AggregateRoot {
 
-domain.eventBus.register(
-  "change item name",
-  /**
-   *
-   * @param {MyDomain} domain
-   */
-  (domain, event) => {
-    console.log("event.....", event);
-  }
-);
+    change(content) {
+        this.apply("change", { content });
+    }
 
-domain.eventBus.registerSaga(($, d) => {
-  return $.pipe(
-    map((event) => {
-      return {
-        type: "done",
-      };
-    })
-  );
-});
-
-domain.commandBus
-  .register("change item name", (domain, { id, name }) => {
-    console.log("calll  change comamnnn....");
-    const item = domain.itemRepository.get(id);
-    item?.changeName(name);
-    item?.commit();
-  })
-  .register("done", (d, c) => {
-    console.log("done !!!");
-  });
-
-const item = domain.itemRepository.create();
+    onChange(event, data) {
+        data.content = event.details.content;
+    }
+}
 
 
-domain.execute({
-  type: "change item name",
-  name: "hello",
-  id: item.id,
-});
+const domain = new Domain(new MemoryEventDB(), [Todo, TodoManager]
+)
+const tm1 = await domain.create("TodoManager", { id: "tmid01" });
+
+domain.eventBus.on({ aggregateName: "Todo" }, function (event) {
+    // console.log(event);
+})
+const t1 = await domain.create("Todo", { id: "id001", content: "todo 01", done: true })
+const t2 = await domain.create("Todo", { id: "id002", content: "todo 0122222", done: true })
+
+// console.log(t1.json.content)
+// console.log(t2.json.content)
+
+
+await tm1.exchange(t1.id, t2.id);
+
+// console.log(t1.json.content)
+// console.log(t2.json.content)

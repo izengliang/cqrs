@@ -1,17 +1,21 @@
-import { Observable, Subject } from "rxjs";
 
 /**
- * @typedef ICommand
- * @prop {string} type
- *
- * @public
- * @callback ICommandHandler
- * @param { import("./domain.js").Domain } domain
- * @param { ICommand } command
- *
- * Saga function
- * @callback ISaga
- * @param { Subject<ICommand> } events$
- * @param { import("./domain.js").Domain } domain
- * @returns { Observable<ICommand> }
+ * @typedef IEvent
+ * @prop { string } id
+ * @prop { string } name
+ * @prop { number } timestamp
+ * @prop { string } [aggregateName]
+ * @prop { string } [aggregateId]
+ * @prop { number } [index]
+ * @prop { string } [key]
+ * @prop { * } [details]
+ * 
+ * 
+ * @typedef ISnapshot
+ * @prop { string } id
+ * @prop { string } endEventIndex
+ * @prop { number } index
+ * @prop { string } aggregateRootId
+ * @prop { string } aggregateName
+ * @prop { any } json
  */

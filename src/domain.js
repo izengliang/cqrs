@@ -1,78 +1,120 @@
-import { CommandBus } from "./command-bus.js";
 import { EventBus } from "./event-bus.js";
-import { AggregateRoot } from "./aggregate-root.js";
-import * as Types from "./types.js";
+import { AbastractAggregateRoot as AggregateRoot } from "./abstract-aggregate-root.js";
+import { MemoryEventDB } from "./memory-event-db.js";
 
-/**
- * @public
- */
-export class Domain {
-  /**
-   * @readonly
-   */
-  commandBus = new CommandBus(this);
+class Domain {
 
-  /**
-   * @readonly
-   */
-  queryBus = new CommandBus(this);
+  constructor(eventdb, AggregateRoots) {
+    if (Array.isArray(eventdb)) {
+      AggregateRoots = eventdb;
+      eventdb = new MemoryEventDB(this);
+    }
+    this.$eventdb = eventdb;
+    AggregateRoots?.forEach(o => this.register(o));
+  }
 
   /**
-   * @readonly
+   * 
+   * @param {(domain)=>{}} plugin 
    */
+  use(plugin) {
+    if (typeof plugin !== "function") throw new TypeError('plugin must be a function!')
+    plugin(this);
+    return this;
+  }
+
+  /**
+   * @type {Map<string, typeof AggregateRoot>}
+   */
+  AggregateRootMap = new Map();
+
+  register(o) {
+    if (o.isAggregateRoot) {
+      this.AggregateRootMap.set(o.type, o);
+    }
+  }
+
   eventBus = new EventBus(this);
 
-  /**
-   * @param { typeof AggregateRoot } Bases
-   */
-  constructor(Bases) {
-    this.registerAggregateClass(Bases);
-  }
 
   /**
-   * @param {  Types.ICommand } command
+   * @type {Map<string, resolve[]>}
    */
-  execute(command) {
-    return this.commandBus.execute(command);
-  }
+  queue = new Map();
 
   /**
-   * @param { Types.ICommand } query
+   * @type {Map<string, AggregateRoot[]>}
    */
-  query(query) {
-    return this.queryBus.execute(query);
-  }
+  cache = new Map();
 
   /**
-   * @type {Map<typeof Types.AggregateRoot, typeof Types.AggregateRoot>}
+   * @type { ( type:string, aggregateRootId:string )=> Promise<AggregateRoot> } 
    */
-  #AggregateClassMap = new Map();
+  async get(type, aggregateRootId) {
 
-  /**
-   * @param {(typeof AggregateRoot | (typeof AggregateRoot)[] )} Base
-   */
-  registerAggregateClass(Base) {
-    /**
-     * @private
-     * @type {(typeof Types.AggregateRoot)[]}
-     */
-    let Bases = [];
-    if (!Array.isArray(Base)) {
-      Bases.push(Base);
-    } else {
-      Bases = Base;
+    if (arguments.length === 1) {
+      aggregateRootId = type;
     }
-    Bases.forEach((Base) => {
-      const Class = this.eventBus.mergeClassContext(Base);
-      this.#AggregateClassMap.set(Base, Class);
-    });
+
+    let obj = this.cache.get(aggregateRootId);
+
+    if (obj) {
+      return Promise.resolve(obj);
+    }
+
+    let resolve;
+
+    const promise = new Promise(r => resolve = r);
+
+    if (!this.queue.has(aggregateRootId)) {
+      this.queue.set(aggregateRootId, []);
+
+      const snap = await this.$eventdb.getSnapshot(aggregateRootId);
+      /**@todo */
+      const events = await this.$eventdb.getEvents(aggregateRootId, { startIndex: snap.endEventId });
+      /**@type {AggregateRoot} */
+
+      const AggregateRootClass = this.AggregateRootMap.get(type)
+      const instance = AggregateRootClass.parse(snap.aggregateRootData);
+      events.forEach(e => instance.update(e));
+      instance.onLoaded();
+      this.cache.set(aggregateRootId, instance);
+      const resolves = this.queue.get(aggregateRootId);
+      resolves.forEach(resolve => resolve(instance));
+    }
+
+    const arr = this.queue.get(aggregateRootId);
+
+    arr.push(resolve);
+
+    return promise;
   }
 
-  /**
-   * @param {typeof Types.AggregateRoot} key
-   * @returns {typeof Types.AggregateRoot | undefined }
-   */
-  getAggegateClass(key) {
-    return this.#AggregateClassMap.get(key);
+  async create(type, details) {
+    const C = this.AggregateRootMap.get(type);
+
+    if (C.single) {
+      let instance = await this.get(C.singleId);
+      if (instance) {
+        return instance;
+      }
+    }
+
+    const instance = C._create(details);
+
+    if (this.cache.has(instance.id)) {
+      return instance;
+    }
+    
+    instance.$domain = this;
+
+    await instance.apply("create", { type: C.type, id: instance.id, json: instance.json })
+    await instance.onCreated();
+    instance.onLoaded();
+    this.cache.set(instance.id, instance);
+    return instance;
   }
+
 }
+
+export { Domain };

@@ -1,21 +1,22 @@
-import { from, Subject, Subscription } from "rxjs";
-import { filter, mergeMap } from "rxjs/operators";
-import {AggregateRoot} from "./aggregate-root";
-import * as Types from "./types.js";
+
+const convertSelector = (selector) => {
+  if (typeof selector !== "string") {
+    selector = (selector.aggregateName || "") + ":" + (selector.aggregateId || "") + ":" + (selector.event || "") + ":" + (selector.key || "")
+  }
+  return selector;
+}
 
 /**
  * @public
  */
 export class EventBus {
-  /**
-   * @type {Subscription[]}
-   */
-  #subscriptions = [];
+
+
+  map = new Map();
 
   /**
    * @type { Subject<Types.ICommand> }
    */
-  #subject = new Subject();
 
   /**
    * @type {Types.Domain}
@@ -29,81 +30,83 @@ export class EventBus {
     this.#domain = domain;
   }
 
-  ngOnDestroy() {
-    this.#subscriptions.forEach((subscription) => subscription.unsubscribe());
+  destory() {
   }
 
   /**
-   *
-   * @param {Types.ICommand} event
+   * 
+   * @param { string | {aggregateName: string; aggregateId:string; event:string} } selector 
+   * @param { ()=> void } handler 
    */
-  publish(event) {
-    this.#subject.next(event);
+  on(selector, handler, rootId) {
+    if (typeof selector === 'function') {
+      handler = selector;
+      selector = {};
+    }
+    selector = convertSelector(selector);
+    if (!this.map.has(selector)) {
+      this.map.set(selector, new Set())
+    }
+    const handlerSet = this.map.get(selector);
+    if (rootId) {
+      handlerSet.add([rootId, handler]);
+    } else {
+      handlerSet.add(handler);
+    }
   }
 
-  publishAll(events = []) {
-    return events.map((event) => this.publish(event));
-  }
-
-  /**
-   * regiester event's handler.
-   * @param {string} type - event's type.
-   * @param {Types.ICommandHandler} handler
-   */
-  register(type, handler) {
-    const subscription = this.#subject
-      .pipe(
-        filter((event) => type === event.type),
-        mergeMap((event) => from(Promise.resolve(handler(this.#domain, event))))
-      )
-      .subscribe({
-        error: (error) => {
-          throw error;
-        },
-      });
-    this.#subscriptions.push(subscription);
-    return this;
-  }
-
-  /**
-   *
-   * @param {Types.ISaga} saga
-   */
-  registerSaga(saga) {
-    const stream$ = saga(this.#subject, this.#domain);
-
-    const subscription = stream$
-      .pipe(
-        filter((e) => !!e),
-        mergeMap((command) =>
-          from(Promise.resolve(this.#domain.commandBus.execute(command)))
-        )
-      )
-      .subscribe({
-        error: (error) => {
-          console.log(error);
-        },
-      });
-
-    this.#subscriptions.push(subscription);
-    return this;
+  off(selector, handler) {
+    if (typeof selector === 'function') {
+      handler = selector;
+      selector = {};
+    }
+    selector = convertSelector(selector);
+    const handlerSet = this.map.get(selector);
+    if (handlerSet) {
+      handlerSet.delete(handler);
+    }
   }
 
   /**
-   * @param {typeof AggregateRoot} Class
-   * @returns {typeof AggregateRoot}
+   * @param { IEvent } event 
    */
-  mergeClassContext(Class) {
-    const eventBus = this;
+  trigger(event) {
+    const selectorSet = new Set();
+    if (event.key) {
+      selectorSet.add((event.aggregateName || "") + ":" + (event.aggregateId || "") + ":" + (event.name || "") + ":" + (event.key || ""))
+      selectorSet.add((event.aggregateName || "") + ":" + (event.aggregateId || "") + "::" + (event.key || ""))
+      selectorSet.add((event.aggregateName || "") + "::" + (event.name || "") + ":" + (event.key || ""))
+      selectorSet.add("::" + (event.name || "") + ":" + (event.key || ""))
+      selectorSet.add((event.aggregateName || "") + "::" + ":" + (event.key || ""))
+    }
 
-    return class extends Class {
-      publish(event) {
-        eventBus.publish(event);
+    selectorSet.add((event.aggregateName || "") + ":" + (event.aggregateId || "") + ":" + (event.name || "")) + ":"
+    selectorSet.add((event.aggregateName || "") + ":" + (event.aggregateId || "") + "::")
+    selectorSet.add((event.aggregateName || "") + "::" + (event.name || "")) + ":"
+    selectorSet.add("::" + (event.name || "")) + ":"
+    selectorSet.add((event.aggregateName || "") + ":::")
+
+    selectorSet.add(":::")
+
+    for (let s of selectorSet) {
+      this._trigger(s, event)
+    }
+
+  }
+
+  async _trigger(selector, event) {
+    const handlerSet = this.map.get(selector);
+    if (handlerSet) {
+      for (let handler of handlerSet) {
+        if (Array.isArray(handler)) {
+          const [id, fn] = handler;
+          const root = await this.#domain.get(id);
+          root && fn.apply(root, [event]);
+        } else {
+          handler(event);
+        }
       }
-
-      publishAll(events) {
-        eventBus.publishAll(events);
-      }
-    };
+    }
   }
+
 }
